@@ -1,0 +1,10 @@
+# Core simulation (mock SAE)
+numpy>=1.26
+scipy>=1.12
+matplotlib>=3.8
+
+# Real-model validation — required for main_real.py only
+# First run downloads GPT-2 weights (~500 MB) and SAE checkpoint (~100 MB)
+torch>=2.0
+transformer_lens>=1.14
+sae_lens>=3.0
