@@ -77,7 +77,7 @@ def simulate(plant: dict, sae: dict, controller,
         if controlled and controller is not None:
             w_t, v_t = controller.compute(x_next)
 
-        x = x_next + w_t
+        x = x_next + w_t   # w_t ∈ range(Π); no effect on safe dims
 
         if v_t is None:
             x_ref = get_reference_state(x_next, sae)
@@ -85,6 +85,10 @@ def simulate(plant: dict, sae: dict, controller,
             v_t = float(e_pre @ e_pre)
 
         states[t]       = x
+        # Energy measured on the post-correction state for all three runs
+        # (uncontrolled: w_t=0; CLF; naive).  Suppression percentages therefore
+        # reflect how much each controller reduces the energy that the SAE encoder
+        # sees after the correction is applied, not the pre-correction peak.
         unsafe_e[t]     = unsafe_energy(x, sae)
         lyapunov_v[t]   = v_t
         corrections[t]  = w_t

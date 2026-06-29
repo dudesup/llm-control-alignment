@@ -161,13 +161,13 @@ The value of the mock simulation is to make the mathematical framework **executa
 
 1. **ISS certificate for general $A$.** Theorem 2 requires $A\Pi = \Pi A$; the mock simulation uses a generic random $A$ with commutativity gap $= 0.68$. Deriving a tight ISS bound for arbitrary $A$ via LMI or sum-of-squares would close this gap formally. Nonetheless, we can characterise why convergence occurs empirically.
 
-   Define the cross-coupling strength $\kappa = \|\Pi A (I{-}\Pi)\|_2 = 0.73$ (how strongly a unit safe-state component $s_t = (I{-}\Pi)x_t$ reactivates the unsafe error subspace) and the safe-state spectral radius $\rho_s = \|(I{-}\Pi) A (I{-}\Pi)\|_2 = 0.72$. The unforced error dynamics — using the ideal controller $x_t^+ = (1-\alpha)e_t + s_t$ — decompose as:
+   Define the cross-coupling strengths $\kappa_{12} = \|\Pi A (I{-}\Pi)\|_2 = 0.73$ (safe→unsafe coupling) and $\kappa_{21} = \|(I{-}\Pi) A \Pi\|_2 = 0.73$ (unsafe→safe coupling; both printed at runtime), and the safe-state spectral radius $\rho_s = \|(I{-}\Pi) A (I{-}\Pi)\|_2 = 0.72$. For the mock plant ($A = 0.75 \cdot UV^\top$ with random orthogonal $U, V$) these norms are numerically equal: $\kappa_{12} = \kappa_{21} = 0.73$. The unforced error dynamics — using the ideal controller $x_t^+ = (1-\alpha)e_t + s_t$ — decompose as:
 
    $$e_{t+1} = (1{-}\alpha)\,\Pi A \Pi\, e_t + \Pi A(I{-}\Pi)\, s_t, \qquad s_{t+1} = (1{-}\alpha)\,(I{-}\Pi) A \Pi\, e_t + (I{-}\Pi) A (I{-}\Pi)\, s_t$$
 
-   Bounding each norm, the joint $(e_t, s_t)$ evolution satisfies $\|(e_{t+1}, s_{t+1})\| \leq M\, \|(e_t, s_t)\|$ with:
+   Bounding each norm gives $\|(e_{t+1}, s_{t+1})\| \leq M\, \|(e_t, s_t)\|$ with the numerically verified bound matrix:
 
-   $$M = \begin{pmatrix} (1{-}\alpha)\rho_u & \kappa \\ (1{-}\alpha)\kappa & \rho_s \end{pmatrix} = \begin{pmatrix} 0.06 & 0.73 \\ 0.058 & 0.72 \end{pmatrix}, \qquad \rho(M) \approx 0.78 < 1$$
+   $$M = \begin{pmatrix} (1{-}\alpha)\rho_u & \kappa_{12} \\ (1{-}\alpha)\kappa_{21} & \rho_s \end{pmatrix} = \begin{pmatrix} 0.06 & 0.73 \\ 0.058 & 0.72 \end{pmatrix}, \qquad \rho(M) \approx 0.78 < 1$$
 
    So the coupled system is stable, converging at rate $\approx 0.78$ — slower than Theorem 2's ideal rate of $0.06$ for commuting $A$, but strictly less than 1. The observed fast convergence in simulation (V $\to 0$ in 2–3 steps after the attack ends) reflects the per-step $(1{-}\alpha) = 0.08$ reduction applied by the controller to $e_t$ at each step, which dominates over the slower $0.78$ tail rate of the $(e, s)$ coupled system.
 

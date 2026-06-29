@@ -47,6 +47,14 @@ class NaiveProjectionController:
       - Has zero alignment tax (w_t in range(Pi)) but no SAE-grounded certificate
       - e_t = Pi @ x may be nonzero even when SAE feature activations are zero
         (ignores ReLU sparsity — over-suppresses when features are inactive)
+
+    Why suppression appears very high (~99%):
+      After correction, x = x_next - α·Pi@x_next = (I - α·Pi)@x_next + (I-Pi)@x_next.
+      The unsafe component in residual space is reduced to (1-α)·Pi@x_next ≈ 0.08·Pi@x_next.
+      The SAE encoder then finds near-zero activations on all unsafe features.
+      This is real suppression, not an artefact — but it comes at the cost of
+      correcting regardless of ReLU sparsity (no SAE certificate, no ISS bound).
+      unsafe_energy is measured post-correction (see system.py), identical for all runs.
     """
     def __init__(self, sae: dict):
         from src.sae_mock import STATE_DIM, I_UNSAFE
@@ -102,6 +110,9 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
     V_iss   = 2.1 * _D**2 / (1.0 - _rho) ** 2   # tight bound: V_∞ ≤ 2.1D²/(1-ρ)²
     _comm_gap = (np.linalg.norm(_Pi @ _A - _A @ _Pi, 'fro')
                  / np.linalg.norm(_A, 'fro'))
+    # §7.1 cross-coupling norms (validate M matrix bounds)
+    _kappa    = float(np.linalg.svd(_Pi @ _A @ (np.eye(len(_A)) - _Pi), compute_uv=False)[0])
+    _kappa_21 = float(np.linalg.svd((np.eye(len(_A)) - _Pi) @ _A @ _Pi, compute_uv=False)[0])
 
     # Calibrate Lyapunov boundary from benign trajectory distribution
     c_calibrated = calibrate_lyapunov_boundary(sae, plant)
@@ -249,6 +260,9 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
     print(f"  ISS bound V∞ ≤ {V_iss:.2f}  (Corollary: 2.1·D²/(1-ρ)²,  ρ={_rho:.4f})")
     print(f"  Commutativity gap ‖ΠA-AΠ‖_F/‖A‖_F : {_comm_gap:.4f}"
           "  (Thm 2 does not apply at this gap — convergence is empirical, see §7.1)")
+    print(f"  §7.1 cross-coupling  κ₁₂=‖ΠA(I-Π)‖₂ : {_kappa:.4f}")
+    print(f"                       κ₂₁=‖(I-Π)AΠ‖₂ : {_kappa_21:.4f}"
+          f"  ({'κ₂₁ ≤ κ₁₂ — M matrix bound valid ✓' if _kappa_21 <= _kappa else 'κ₂₁ > κ₁₂ — update M matrix bound'})")
     print("="*60 + "\n")
 
 

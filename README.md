@@ -69,7 +69,7 @@ The controller is **passive on safe dimensions** (`w_t = 0` when `e_t = 0`) — 
 
 **Top panel — Unsafe Feature Activation Energy:**
 - Red (uncontrolled): unsafe activations spike to 1.46 during jailbreak window
-- Orange dashed (Naive projection Pi@x): 99.2% suppression — geometric projection without SAE encoding; no formal ISS certificate
+- Orange dashed (Naive projection Pi@x): 99.2% post-correction suppression — projects the full Pi@x regardless of ReLU sparsity, leaving only (1-α)·Pi@x ≈ 0.08·Pi@x in the unsafe subspace; the SAE encoder therefore sees near-zero unsafe activations. High suppression reflects aggressive over-correction, not a measurement artefact. No formal ISS certificate.
 - Green (CLF Controller): 70.6% suppression (peak: 0.43) — SAE-grounded, with formal ISS certificate and Lyapunov runtime monitor
 
 **Bottom panel — Lyapunov Runtime Monitor:**
