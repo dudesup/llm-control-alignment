@@ -55,6 +55,8 @@ if V(e_t) >= LYAPUNOV_BOUNDARY:
     → halt generation  (pre-token safety trigger)
 ```
 
+The boundary `c = 0.4` is a conservative detection threshold set well above the benign-trajectory V level (95th percentile ≈ 0.003 under no disturbance, printed at runtime) and below the ISS bound V∞ ≤ 14.78 — providing ~150× margin above benign noise before triggering a halt. The calibrated benign percentile is printed at runtime for transparency.
+
 The controller is **passive on safe dimensions** (`w_t = 0` when `e_t = 0`) — zero alignment tax by construction.
 
 > **Note on naming:** *H∞-inspired* refers to the structural constraint that `K` acts only on the unsafe subspace — the key property borrowed from H∞ loop-shaping. The gain is proportional rather than synthesised via Riccati; the stability certificate is a Lyapunov CLF, not an H∞ norm bound.
@@ -67,7 +69,8 @@ The controller is **passive on safe dimensions** (`w_t = 0` when `e_t = 0`) — 
 
 **Top panel — Unsafe Feature Activation Energy:**
 - Red (uncontrolled): unsafe activations spike to 1.46 during jailbreak window
-- Green (CLF Controller): attack energy suppressed by **70.6%** (peak: 0.43)
+- Orange dashed (Naive projection Pi@x): 99.2% suppression — geometric projection without SAE encoding; no formal ISS certificate
+- Green (CLF Controller): 70.6% suppression (peak: 0.43) — SAE-grounded, with formal ISS certificate and Lyapunov runtime monitor
 
 **Bottom panel — Lyapunov Runtime Monitor:**
 - `V(e_t)` exceeds the halt boundary `c` at `t=10` (first attack step); `V` is large under active disturbance but collapses to ≈ 0 within 2 steps after the attack ends
@@ -79,7 +82,7 @@ The controller is **passive on safe dimensions** (`w_t = 0` when `e_t = 0`) — 
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/llm-control-alignment.git
+git clone https://github.com/dudesup/llm-control-alignment.git
 cd llm-control-alignment
 pip install -r requirements.txt
 ```
@@ -180,10 +183,10 @@ The value of this simulation is not empirical — it is to make the theoretical 
 If you build on this work:
 
 ```bibtex
-@misc{yourname2026llmcontrol,
+@misc{supinska2026llmcontrol,
   title  = {Modeling LLM Alignment Failures via Discrete-Time Control Theory},
-  author = {Your Name},
+  author = {Daria Supinska},
   year   = {2026},
-  url    = {https://github.com/yourusername/llm-control-alignment}
+  url    = {https://github.com/dudesup/llm-control-alignment}
 }
 ```

@@ -159,7 +159,17 @@ The value of the mock simulation is to make the mathematical framework **executa
 
 ## 7. Open Problems
 
-1. **ISS certificate for general $A$.** Theorem 2 requires $A\Pi = \Pi A$. Deriving a tight ISS bound for generic $A$ via LMI or sum-of-squares would close this gap.
+1. **ISS certificate for general $A$.** Theorem 2 requires $A\Pi = \Pi A$; the mock simulation uses a generic random $A$ with commutativity gap $= 0.68$. Deriving a tight ISS bound for arbitrary $A$ via LMI or sum-of-squares would close this gap formally. Nonetheless, we can characterise why convergence occurs empirically.
+
+   Define the cross-coupling strength $\kappa = \|\Pi A (I{-}\Pi)\|_2 = 0.73$ (how strongly a unit safe-state component $s_t = (I{-}\Pi)x_t$ reactivates the unsafe error subspace) and the safe-state spectral radius $\rho_s = \|(I{-}\Pi) A (I{-}\Pi)\|_2 = 0.72$. The unforced error dynamics — using the ideal controller $x_t^+ = (1-\alpha)e_t + s_t$ — decompose as:
+
+   $$e_{t+1} = (1{-}\alpha)\,\Pi A \Pi\, e_t + \Pi A(I{-}\Pi)\, s_t, \qquad s_{t+1} = (1{-}\alpha)\,(I{-}\Pi) A \Pi\, e_t + (I{-}\Pi) A (I{-}\Pi)\, s_t$$
+
+   Bounding each norm, the joint $(e_t, s_t)$ evolution satisfies $\|(e_{t+1}, s_{t+1})\| \leq M\, \|(e_t, s_t)\|$ with:
+
+   $$M = \begin{pmatrix} (1{-}\alpha)\rho_u & \kappa \\ (1{-}\alpha)\kappa & \rho_s \end{pmatrix} = \begin{pmatrix} 0.06 & 0.73 \\ 0.058 & 0.72 \end{pmatrix}, \qquad \rho(M) \approx 0.78 < 1$$
+
+   So the coupled system is stable, converging at rate $\approx 0.78$ — slower than Theorem 2's ideal rate of $0.06$ for commuting $A$, but strictly less than 1. The observed fast convergence in simulation (V $\to 0$ in 2–3 steps after the attack ends) reflects the per-step $(1{-}\alpha) = 0.08$ reduction applied by the controller to $e_t$ at each step, which dominates over the slower $0.78$ tail rate of the $(e, s)$ coupled system.
 
 2. **Transformer plant identification.** Approximating the transformer forward pass as a discrete-time dynamical system in residual-stream coordinates — identifying an effective $A$, $W$, noise covariance — is an open system identification problem.
 

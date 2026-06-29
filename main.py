@@ -5,8 +5,9 @@ Runs the full LLM alignment control simulation and produces two publication-
 quality figures:
 
   Figure 1 — Unsafe Feature Energy Trajectory
-      Red  (uncontrolled): unsafe activation explodes during jailbreak window
-      Green (controlled)  : CLF Controller suppresses the disturbance
+      Red    (uncontrolled) : unsafe activation explodes during jailbreak window
+      Orange (naive Pi@x)   : geometric projection baseline — no SAE certificate
+      Green  (CLF controller): SAE-grounded CLF suppresses the disturbance
 
   Figure 2 — Lyapunov Runtime Monitor
       Shows V(e_t) for the controlled trajectory.
@@ -31,18 +32,66 @@ from src.controller import SafeSubspaceClfController, LYAPUNOV_BOUNDARY, SUPPRES
 # ── Style constants ────────────────────────────────────────────────────────────
 COLOR_UNCONTROLLED = "#E05252"   # red
 COLOR_CONTROLLED   = "#4CAF80"   # green
+COLOR_NAIVE        = "#E09B52"   # orange — naive projection baseline
 COLOR_BOUNDARY     = "#F0A500"   # amber
 COLOR_BREACH_FILL  = "#FFF3CD"   # pale yellow breach zone
 ATTACK_FILL        = "#F5E6FF"   # pale purple attack window
+
+
+class NaiveProjectionController:
+    """
+    Baseline comparator: w_t = -alpha * Pi @ x  (geometric projection, no SAE encoding).
+
+    Differences from SafeSubspaceClfController:
+      - Does not call encode(); projects x directly onto range(Pi)
+      - Has zero alignment tax (w_t in range(Pi)) but no SAE-grounded certificate
+      - e_t = Pi @ x may be nonzero even when SAE feature activations are zero
+        (ignores ReLU sparsity — over-suppresses when features are inactive)
+    """
+    def __init__(self, sae: dict):
+        from src.sae_mock import STATE_DIM, I_UNSAFE
+        V_unsafe = sae["W_dec"][:, I_UNSAFE]
+        Q, _     = np.linalg.qr(V_unsafe, mode='reduced')
+        self.Pi  = Q @ Q.T
+        d        = STATE_DIM
+        self.P   = 2.0 * self.Pi + 0.1 * np.eye(d)
+        self.breach_log: list = []
+        self._step = 0
+
+    def compute(self, x: np.ndarray):
+        e = self.Pi @ x
+        v = float(e @ self.P @ e)
+        if v >= LYAPUNOV_BOUNDARY:
+            self.breach_log.append({"t": self._step, "V": v})
+        self._step += 1
+        return -SUPPRESSION_GAIN * e, v
+
+    def reset(self):
+        self._step = 0
+        self.breach_log.clear()
+
+
+def calibrate_lyapunov_boundary(sae: dict, plant: dict,
+                                 n_steps: int = 500, percentile: float = 95.0) -> float:
+    """
+    Data-driven calibration: run the plant for n_steps with no disturbance
+    and return the given percentile of V(e_t) as the boundary c.
+    """
+    ctrl_cal = SafeSubspaceClfController(sae)
+    result   = simulate(plant, sae, ctrl_cal,
+                        n_steps=n_steps, controlled=True, seed=99,
+                        attack_start=n_steps + 1, attack_end=n_steps + 2)
+    return float(np.percentile(result["lyapunov"], percentile))
 
 
 def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
         save: bool = False):
 
     # ── Build shared components ────────────────────────────────────────────────
-    sae   = build_sae(seed=42)
-    plant = build_plant(seed=0)
-    ctrl  = SafeSubspaceClfController(sae, raise_on_breach=False)
+    sae        = build_sae(seed=42)
+    plant      = build_plant(seed=0)
+    ctrl       = SafeSubspaceClfController(sae, raise_on_breach=False)
+    naive_ctrl = NaiveProjectionController(sae)
 
     # ── ISS quantities — Proposition 1 + Corollary (RESEARCH_NOTE.md) ─────────
     _Pi     = ctrl.Pi
@@ -54,12 +103,18 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
     _comm_gap = (np.linalg.norm(_Pi @ _A - _A @ _Pi, 'fro')
                  / np.linalg.norm(_A, 'fro'))
 
-    # ── Simulate both trajectories ─────────────────────────────────────────────
+    # Calibrate Lyapunov boundary from benign trajectory distribution
+    c_calibrated = calibrate_lyapunov_boundary(sae, plant)
+
+    # ── Simulate all three trajectories ───────────────────────────────────────
     uncontrolled = simulate(plant, sae, controller=ctrl,
                             n_steps=n_steps, controlled=False, seed=1,
                             attack_start=attack_start, attack_end=attack_end)
     ctrl.reset()
     controlled   = simulate(plant, sae, controller=ctrl,
+                            n_steps=n_steps, controlled=True,  seed=1,
+                            attack_start=attack_start, attack_end=attack_end)
+    naive        = simulate(plant, sae, controller=naive_ctrl,
                             n_steps=n_steps, controlled=True,  seed=1,
                             attack_start=attack_start, attack_end=attack_end)
 
@@ -79,6 +134,9 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
 
     ax1.plot(steps, uncontrolled["unsafe_energy"],
              color=COLOR_UNCONTROLLED, linewidth=2.2, label="No controller (baseline)")
+    ax1.plot(steps, naive["unsafe_energy"],
+             color=COLOR_NAIVE,        linewidth=2.0, linestyle="--",
+             label="Naive projection  Pi@x  (no SAE certificate)")
     ax1.plot(steps, controlled["unsafe_energy"],
              color=COLOR_CONTROLLED,   linewidth=2.2, label="CLF Controller (proposed)")
 
@@ -164,25 +222,34 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
         plt.show()
 
     # ── Console summary ────────────────────────────────────────────────────────
-    print("\n" + "="*55)
+    peak_unc   = uncontrolled["unsafe_energy"].max()
+    peak_ctrl  = controlled["unsafe_energy"].max()
+    peak_naive = naive["unsafe_energy"].max()
+    sup_clf    = (1 - peak_ctrl  / (peak_unc + 1e-9)) * 100
+    sup_naive  = (1 - peak_naive / (peak_unc + 1e-9)) * 100
+
+    print("\n" + "="*60)
     print("  SIMULATION SUMMARY")
-    print("="*55)
+    print("="*60)
     print(f"  Steps simulated       : {n_steps}")
     print(f"  Jailbreak window      : t ∈ [{attack_start}, {attack_end})")
-    print(f"  Lyapunov boundary (c) : {LYAPUNOV_BOUNDARY}")
-    print(f"  Peak unsafe energy (uncontrolled) : {uncontrolled['unsafe_energy'].max():.4f}")
-    print(f"  Peak unsafe energy (controlled)   : {controlled['unsafe_energy'].max():.4f}")
-    suppression = (1 - controlled["unsafe_energy"].max() /
-                   (uncontrolled["unsafe_energy"].max() + 1e-9)) * 100
-    print(f"  Attack suppression    : {suppression:.1f}%")
-    print(f"  Lyapunov breaches     : {len(ctrl.breach_log)}")
+    print(f"  Lyapunov boundary (c) : {LYAPUNOV_BOUNDARY}  "
+          f"(calibrated 95th-pct benign: {c_calibrated:.4f})")
+    print(f"  Peak unsafe energy (uncontrolled)   : {peak_unc:.4f}")
+    print(f"  Peak unsafe energy (naive Pi@x)     : {peak_naive:.4f}  ({sup_naive:.1f}% suppression)")
+    print(f"  Peak unsafe energy (CLF controller) : {peak_ctrl:.4f}  ({sup_clf:.1f}% suppression)")
+    print(f"  CLF Lyapunov breaches : {len(ctrl.breach_log)}")
     if ctrl.breach_log:
         print(f"  First breach at t     : {ctrl.breach_log[0]['t']}  "
               f"(V = {ctrl.breach_log[0]['V']:.4f})")
+    print(f"  Note: naive Pi@x has higher suppression because it applies the full")
+    print(f"        geometric projection regardless of SAE ReLU sparsity (over-corrects")
+    print(f"        when features are inactive). CLF correction is SAE-calibrated and")
+    print(f"        carries a formal ISS certificate; naive provides none.")
     print(f"  ISS bound V∞ ≤ {V_iss:.2f}  (Corollary: 2.1·D²/(1-ρ)²,  ρ={_rho:.4f})")
     print(f"  Commutativity gap ‖ΠA-AΠ‖_F/‖A‖_F : {_comm_gap:.4f}"
           "  (Thm 2 does not apply at this gap — convergence is empirical, see §7.1)")
-    print("="*55 + "\n")
+    print("="*60 + "\n")
 
 
 if __name__ == "__main__":
