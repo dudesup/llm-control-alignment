@@ -11,7 +11,10 @@ quality figures:
 
   Figure 2 — Lyapunov Runtime Monitor
       Shows V(e_t) for the controlled trajectory.
-      Horizontal dashed line marks the invariant-set boundary c.
+      Horizontal dashed line marks boundary c — invariant when d_t=0 *and* Theorem 2's
+      other conditions hold (linear plant, n_t=0, AΠ=ΠA), none of which this mock's own
+      disturbance-free case fully satisfies (see RESEARCH_NOTE.md §7.1). Treat as an
+      empirically observed threshold here, not a proven invariant.
       Shaded region flags where the monitor would trigger a pre-token halt.
 
 Usage:
@@ -79,11 +82,89 @@ class NaiveProjectionController:
         self.breach_log.clear()
 
 
-def calibrate_lyapunov_boundary(sae: dict, plant: dict,
-                                 n_steps: int = 500, percentile: float = 95.0) -> float:
+def _stability_quantities(ctrl: SafeSubspaceClfController, plant: dict) -> dict:
+    """ISS + §7.1 M-matrix quantities (RESEARCH_NOTE.md), factored out so run() and
+    sweep_seeds() compute them identically instead of duplicating the block."""
+    Pi = ctrl.Pi
+    A  = plant["A"]
+    I  = np.eye(len(A))
+    rho_u    = float(np.linalg.svd(Pi @ A @ Pi, compute_uv=False)[0])
+    rho      = (1.0 - SUPPRESSION_GAIN) * rho_u
+    comm_gap = np.linalg.norm(Pi @ A - A @ Pi, 'fro') / np.linalg.norm(A, 'fro')
+    kappa    = float(np.linalg.svd(Pi @ A @ (I - Pi), compute_uv=False)[0])
+    kappa_21 = float(np.linalg.svd((I - Pi) @ A @ Pi, compute_uv=False)[0])
+    rho_s    = float(np.linalg.svd((I - Pi) @ A @ (I - Pi), compute_uv=False)[0])
+    M = np.array([[(1.0 - SUPPRESSION_GAIN) * rho_u,    kappa],
+                  [(1.0 - SUPPRESSION_GAIN) * kappa_21,  rho_s]])
+    rho_M = float(np.max(np.abs(np.linalg.eigvals(M))))
+    return {"rho_u": rho_u, "rho": rho, "comm_gap": comm_gap, "kappa": kappa,
+            "kappa_21": kappa_21, "rho_s": rho_s, "M": M, "rho_M": rho_M}
+
+
+def sweep_seeds(n_seeds: int = 10, n_steps: int = 30,
+                 attack_windows: list[tuple[int, int]] = ((10, 15), (5, 10), (18, 25))) -> None:
+    """Robustness check (single-seed caveat, README §Results): the headline 70.6%/99.2%
+    numbers are one realisation of random A, W_dec and one attack window. This reruns the
+    mock across n_seeds trial seeds (decorrelated SAE/plant/process-noise seeds per trial)
+    x len(attack_windows) windows and reports medians + [min, max] instead of one point.
+    Mock simulation is cheap (no GPU, ~ms per trial), so this costs seconds, not sessions.
     """
-    Data-driven calibration: run the plant for n_steps with no disturbance
-    and return the given percentile of V(e_t) as the boundary c.
+    sup_clf_all, sup_naive_all, rho_m_all = [], [], []
+
+    for i in range(n_seeds):
+        sae   = build_sae(seed=42 + i)
+        plant = build_plant(seed=1000 + i)
+        ctrl  = SafeSubspaceClfController(sae, raise_on_breach=False)
+        naive_ctrl = NaiveProjectionController(sae)
+        stab  = _stability_quantities(ctrl, plant)
+        rho_m_all.append(stab["rho_M"])
+
+        for (a_start, a_end) in attack_windows:
+            sim_seed = 100 + i
+            uncontrolled = simulate(plant, sae, controller=ctrl, n_steps=n_steps,
+                                     controlled=False, seed=sim_seed,
+                                     attack_start=a_start, attack_end=a_end)
+            ctrl.reset()
+            controlled = simulate(plant, sae, controller=ctrl, n_steps=n_steps,
+                                   controlled=True, seed=sim_seed,
+                                   attack_start=a_start, attack_end=a_end)
+            naive = simulate(plant, sae, controller=naive_ctrl, n_steps=n_steps,
+                              controlled=True, seed=sim_seed,
+                              attack_start=a_start, attack_end=a_end)
+
+            peak_unc   = uncontrolled["unsafe_energy"].max()
+            peak_ctrl  = controlled["unsafe_energy"].max()
+            peak_naive = naive["unsafe_energy"].max()
+            sup_clf_all.append((1 - peak_ctrl / (peak_unc + 1e-9)) * 100)
+            sup_naive_all.append((1 - peak_naive / (peak_unc + 1e-9)) * 100)
+
+    def _stats(vals):
+        return (float(np.median(vals)), float(np.min(vals)), float(np.max(vals)))
+
+    clf_med, clf_lo, clf_hi       = _stats(sup_clf_all)
+    naive_med, naive_lo, naive_hi = _stats(sup_naive_all)
+    rho_med, rho_lo, rho_hi       = _stats(rho_m_all)
+    n_trials = n_seeds * len(attack_windows)
+
+    print("\n" + "=" * 60)
+    print(f"  SEED SWEEP  ({n_seeds} seeds x {len(attack_windows)} attack windows = {n_trials} trials)")
+    print("=" * 60)
+    print(f"  CLF suppression   : median {clf_med:.1f}%   range [{clf_lo:.1f}%, {clf_hi:.1f}%]")
+    print(f"  Naive suppression : median {naive_med:.1f}%   range [{naive_lo:.1f}%, {naive_hi:.1f}%]")
+    print(f"  §7.1 rho(M)       : median {rho_med:.4f}     range [{rho_lo:.4f}, {rho_hi:.4f}]"
+          f"   ({'all < 1 — stable across every trial ✓' if rho_hi < 1.0 else 'SOME TRIALS >= 1 — bound does not hold everywhere ✗'})")
+    print("=" * 60 + "\n")
+
+
+def measure_benign_lyapunov_floor(sae: dict, plant: dict,
+                                   n_steps: int = 500, percentile: float = 95.0) -> float:
+    """
+    Diagnostic only — does NOT set LYAPUNOV_BOUNDARY. Runs the plant for n_steps with no
+    disturbance and returns the given percentile of V(e_t): the empirical "benign floor"
+    used to *justify* the manually-chosen c = LYAPUNOV_BOUNDARY = 0.4 (well above this
+    floor, below the ISS bound V_inf — see README §Design highlights), not to *derive* it.
+    Previously named calibrate_lyapunov_boundary, which implied it calibrated the runtime
+    boundary; it never did — it was always print-only. Renamed for honesty, not behavior.
     """
     ctrl_cal = SafeSubspaceClfController(sae)
     result   = simulate(plant, sae, ctrl_cal,
@@ -93,7 +174,7 @@ def calibrate_lyapunov_boundary(sae: dict, plant: dict,
 
 
 def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
-        save: bool = False):
+        save: bool = False, sim_seed: int = 1):
 
     # ── Build shared components ────────────────────────────────────────────────
     sae        = build_sae(seed=42)
@@ -102,31 +183,31 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
     naive_ctrl = NaiveProjectionController(sae)
 
     # ── ISS quantities — Proposition 1 + Corollary (RESEARCH_NOTE.md) ─────────
-    _Pi     = ctrl.Pi
-    _A      = plant["A"]
-    _rho_u  = float(np.linalg.svd(_Pi @ _A @ _Pi, compute_uv=False)[0])
-    _rho    = (1.0 - SUPPRESSION_GAIN) * _rho_u
+    stab    = _stability_quantities(ctrl, plant)
+    _rho    = stab["rho"]
+    _comm_gap, _kappa, _kappa_21, _rho_s, _M, _rho_M = (
+        stab["comm_gap"], stab["kappa"], stab["kappa_21"], stab["rho_s"], stab["M"], stab["rho_M"])
     _D      = 2.5      # adversarial magnitude; in range(Pi) by construction
     V_iss   = 2.1 * _D**2 / (1.0 - _rho) ** 2   # tight bound: V_∞ ≤ 2.1D²/(1-ρ)²
-    _comm_gap = (np.linalg.norm(_Pi @ _A - _A @ _Pi, 'fro')
-                 / np.linalg.norm(_A, 'fro'))
-    # §7.1 cross-coupling norms (validate M matrix bounds)
-    _kappa    = float(np.linalg.svd(_Pi @ _A @ (np.eye(len(_A)) - _Pi), compute_uv=False)[0])
-    _kappa_21 = float(np.linalg.svd((np.eye(len(_A)) - _Pi) @ _A @ _Pi, compute_uv=False)[0])
 
-    # Calibrate Lyapunov boundary from benign trajectory distribution
-    c_calibrated = calibrate_lyapunov_boundary(sae, plant)
+    # Diagnostic only — see measure_benign_lyapunov_floor docstring: this does not set
+    # LYAPUNOV_BOUNDARY, it measures the floor used to justify the manually-chosen value.
+    benign_floor_p95 = measure_benign_lyapunov_floor(sae, plant)
 
     # ── Simulate all three trajectories ───────────────────────────────────────
+    # NOTE (single-seed caveat, README §Results): sae_seed=42, plant_seed=0 and
+    # sim_seed (below, default 1, override with --seed) are one realisation of
+    # random A, W_dec and one attack window — see `python main.py --sweep 10`
+    # for medians/ranges across seeds and attack windows instead of this one point.
     uncontrolled = simulate(plant, sae, controller=ctrl,
-                            n_steps=n_steps, controlled=False, seed=1,
+                            n_steps=n_steps, controlled=False, seed=sim_seed,
                             attack_start=attack_start, attack_end=attack_end)
     ctrl.reset()
     controlled   = simulate(plant, sae, controller=ctrl,
-                            n_steps=n_steps, controlled=True,  seed=1,
+                            n_steps=n_steps, controlled=True,  seed=sim_seed,
                             attack_start=attack_start, attack_end=attack_end)
     naive        = simulate(plant, sae, controller=naive_ctrl,
-                            n_steps=n_steps, controlled=True,  seed=1,
+                            n_steps=n_steps, controlled=True,  seed=sim_seed,
                             attack_start=attack_start, attack_end=attack_end)
 
     steps = np.arange(n_steps)
@@ -180,7 +261,9 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
 
     # Boundary line
     ax2.axhline(LYAPUNOV_BOUNDARY, color=COLOR_BOUNDARY,
-                linewidth=1.5, linestyle="--", label=f"Halt boundary  c = {LYAPUNOV_BOUNDARY}  (invariant when dₜ = 0)")
+                linewidth=1.5, linestyle="--",
+                label=f"Halt boundary  c = {LYAPUNOV_BOUNDARY}  "
+                      f"(invariant when dₜ=0 *and* Thm 2's other conditions hold — not fully met by this mock, see README)")
 
     # Shade breach zone
     ax2.fill_between(steps, lyap, LYAPUNOV_BOUNDARY,
@@ -244,8 +327,11 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
     print("="*60)
     print(f"  Steps simulated       : {n_steps}")
     print(f"  Jailbreak window      : t ∈ [{attack_start}, {attack_end})")
-    print(f"  Lyapunov boundary (c) : {LYAPUNOV_BOUNDARY}  "
-          f"(calibrated 95th-pct benign: {c_calibrated:.4f})")
+    _margin_ratio = LYAPUNOV_BOUNDARY / max(benign_floor_p95, 1e-9)
+    print(f"  Lyapunov boundary (c) : {LYAPUNOV_BOUNDARY}  (manually set, NOT derived from "
+          f"the line below)")
+    print(f"  Benign 95th-pct floor : {benign_floor_p95:.4f}  "
+          f"(diagnostic — justifies c via a {_margin_ratio:.0f}x margin, doesn't set it)")
     print(f"  Peak unsafe energy (uncontrolled)   : {peak_unc:.4f}")
     print(f"  Peak unsafe energy (naive Pi@x)     : {peak_naive:.4f}  ({sup_naive:.1f}% suppression)")
     print(f"  Peak unsafe energy (CLF controller) : {peak_ctrl:.4f}  ({sup_clf:.1f}% suppression)")
@@ -261,8 +347,12 @@ def run(n_steps: int = 30, attack_start: int = 10, attack_end: int = 15,
     print(f"  Commutativity gap ‖ΠA-AΠ‖_F/‖A‖_F : {_comm_gap:.4f}"
           "  (Thm 2 does not apply at this gap — convergence is empirical, see §7.1)")
     print(f"  §7.1 cross-coupling  κ₁₂=‖ΠA(I-Π)‖₂ : {_kappa:.4f}")
-    print(f"                       κ₂₁=‖(I-Π)AΠ‖₂ : {_kappa_21:.4f}"
-          f"  ({'κ₂₁ ≤ κ₁₂ — M matrix bound valid ✓' if _kappa_21 <= _kappa else 'κ₂₁ > κ₁₂ — update M matrix bound'})")
+    print(f"                       κ₂₁=‖(I-Π)AΠ‖₂ : {_kappa_21:.4f}")
+    print(f"                       ρ_s=‖(I-Π)A(I-Π)‖₂ : {_rho_s:.4f}")
+    print(f"  §7.1 M matrix (bound, RESEARCH_NOTE §7.1): "
+          f"[[{_M[0,0]:.4f}, {_M[0,1]:.4f}], [{_M[1,0]:.4f}, {_M[1,1]:.4f}]]")
+    print(f"  §7.1 spectral radius ρ(M) = {_rho_M:.4f}"
+          f"  ({'< 1 — coupled (e,s) system stable ✓' if _rho_M < 1.0 else '>= 1 — coupled system bound invalid ✗'})")
     print("="*60 + "\n")
 
 
@@ -271,11 +361,20 @@ if __name__ == "__main__":
     parser.add_argument("--steps",        type=int,  default=30)
     parser.add_argument("--attack-start", type=int,  default=10)
     parser.add_argument("--attack-end",   type=int,  default=15)
+    parser.add_argument("--seed",         type=int,  default=1,
+                        help="Process-noise seed for the single-run plot (sae/plant seeds are fixed at 42/0)")
     parser.add_argument("--save",         action="store_true",
                         help="Save figures to figures/ instead of displaying")
+    parser.add_argument("--sweep",        type=int,  default=0, metavar="N_SEEDS",
+                        help="Run the robustness sweep (N_SEEDS trial seeds x 3 attack windows, "
+                             "prints median/range) instead of a single plot")
     args = parser.parse_args()
 
-    run(n_steps=args.steps,
-        attack_start=args.attack_start,
-        attack_end=args.attack_end,
-        save=args.save)
+    if args.sweep:
+        sweep_seeds(n_seeds=args.sweep, n_steps=args.steps)
+    else:
+        run(n_steps=args.steps,
+            attack_start=args.attack_start,
+            attack_end=args.attack_end,
+            save=args.save,
+            sim_seed=args.seed)

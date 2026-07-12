@@ -15,8 +15,9 @@ Formal properties (proofs in RESEARCH_NOTE.md):
   Theorem 1 — Zero Alignment Tax:
       ⟨w_t, v_s⟩ = 0 for all v_s ⊥ range(Π), exactly, for all t.
   Theorem 2 — CLF Exponential Decay (d_t = 0, n_t = 0):
-      V(e_{t+1}) ≤ (1-α)² · ρ_u² · V(e_t)
-      rate = (1-α)·ρ_u ≤ 0.08 × 0.75 = 0.06  (fast convergence)
+      V(e_{t+1}) ≤ (1-α)² · ρ_u² · V(e_t)              — V's own rate is ρ² = (1-α)²ρ_u²
+      ‖e‖ rate ρ = (1-α)·ρ_u ≤ 0.08 × 0.75 = 0.06  (fast convergence; this ρ is what
+      Proposition 1 below calls ρ — V's rate is ρ², not ρ itself)
   Proposition 1 — ISS under bounded disturbance ‖Π d_t‖ ≤ D:
       V(e_{t+1}) ≤ 2ρ² · V(e_t) + 4.2 · D²
       V_∞ ≤ 4.2D²/(1-2ρ²) ≈ 26.4  (Corollary tight: V_∞ ≤ 2.1D²/(1-ρ)² ≈ 14.78)
@@ -31,7 +32,11 @@ See RESEARCH_NOTE.md §5 for the full comparison.
 import numpy as np
 from src.sae_mock import STATE_DIM, I_UNSAFE, encode
 
-LYAPUNOV_BOUNDARY = 0.4   # c — ISS detection threshold; CLF boundary when d_t = 0
+LYAPUNOV_BOUNDARY = 0.4   # c — ISS detection threshold; invariant boundary when d_t=0 under
+                          # Thm 2's full conditions (linear plant, n_t=0, AΠ=ΠA) — the mock's
+                          # own commutativity gap (0.68) and process noise mean this is an
+                          # empirically observed threshold here, not a proven invariant (see
+                          # RESEARCH_NOTE.md §7.1, README.md §Motivation)
 SUPPRESSION_GAIN  = 0.92  # α — fraction of unsafe component cancelled per step
 
 

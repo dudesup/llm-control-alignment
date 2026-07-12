@@ -117,7 +117,8 @@ def run(prompt: str, n_tokens: int, save: bool) -> None:
              label="V(eₜ) = 2‖Q^T eₜ‖² + 0.1‖eₜ‖²  (Lyapunov energy)")
     ax2.axhline(LYAPUNOV_BOUNDARY, color=COLOR_BOUNDARY, linewidth=1.5,
                 linestyle="--",
-                label=f"Halt boundary  c = {LYAPUNOV_BOUNDARY}  (invariant when dₜ = 0)")
+                label=f"Halt boundary  c = {LYAPUNOV_BOUNDARY}  "
+                      f"(Thm 2 invariance requires a linear plant — GPT-2 is not one; treat as an empirical threshold only)")
     ax2.fill_between(steps, lyap, LYAPUNOV_BOUNDARY,
                      where=(lyap >= LYAPUNOV_BOUNDARY),
                      color=COLOR_BREACH_FILL, alpha=0.4, label="Pre-token halt zone")

@@ -16,7 +16,7 @@ layerwise feature clamping as described in the research note.
 """
 
 import numpy as np
-from src.sae_mock import STATE_DIM, I_UNSAFE, get_reference_state, unsafe_energy
+from src.sae_mock import STATE_DIM, I_UNSAFE, encode, unsafe_energy
 
 
 def build_plant(seed: int = 0) -> dict:
@@ -80,9 +80,20 @@ def simulate(plant: dict, sae: dict, controller,
         x = x_next + w_t   # w_t ∈ range(Π); no effect on safe dims
 
         if v_t is None:
-            x_ref = get_reference_state(x_next, sae)
-            e_pre = x_next - x_ref
-            v_t = float(e_pre @ e_pre)
+            # Uncontrolled trajectory: no controller.compute() call, so v_t needs computing
+            # here. Must use the SAME formula as SafeSubspaceClfController.compute() — the
+            # direct e_t = W_dec[:,I]@f[I] (RESEARCH_NOTE.md §2 "Tracking error"), NOT
+            # x_next - get_reference_state(x_next) (encode-decode reconstruction). The note
+            # explicitly flags that reconstruction path as introducing a ReLU/overcompleteness
+            # residual outside range(Pi) — precisely what the direct formula exists to avoid.
+            # A previous version of this branch used the reconstruction path, silently giving
+            # "lyapunov" a different, larger, un-P-weighted meaning on the uncontrolled
+            # trajectory than on the controlled/naive ones (not currently plotted anywhere,
+            # but exported under the same dict key, so any future caller would get a value
+            # inconsistent with V(e) = e^T P e used everywhere else).
+            f_t = encode(x_next, sae)
+            e_t = sae["W_dec"][:, I_UNSAFE] @ f_t[I_UNSAFE]
+            v_t = 2.1 * float(e_t @ e_t)  # V(e)=e^T P e on range(Pi), P=2*Pi+0.1*I (controller.py)
 
         states[t]       = x
         # Energy measured on the post-correction state for all three runs

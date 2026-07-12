@@ -83,7 +83,7 @@ $$\langle w_t,\, v_s \rangle = 0$$
 
 $$V(e_{t+1}) \leq (1 - \alpha)^2\, \rho_u^2\; V(e_t)$$
 
-Hence $V(e_t) \to 0$ exponentially with rate $(1-\alpha)\, \rho_u$.
+Hence $V(e_t) \to 0$ exponentially. To be precise about which quantity decays at which rate (this was previously stated loosely and inconsistent with the bound in the next line): $\|e_t\|$ contracts at rate $\rho := (1-\alpha)\,\rho_u$ per step — this is the $\rho$ used throughout Proposition 1 and its Corollary below — and since $V(e) = 2.1\|e\|^2$ is quadratic in $e$, $V(e_t)$ itself contracts at rate $\rho^2 = (1-\alpha)^2\rho_u^2$, matching the bound in Eq. (line above) exactly.
 
 **Proof.** This proof uses the ideal controller $w_t^* = -\alpha\Pi x_t$, giving $x_t^+ = (I-\alpha\Pi)x_t$ and $\Pi x_t^+ = (1-\alpha)e_t$. One plant step:
 
@@ -93,7 +93,7 @@ Therefore:
 
 $$V(e_{t+1}) = 2.1\, \|e_{t+1}\|^2 \leq 2.1\, (1-\alpha)^2 \rho_u^2\, \|e_t\|^2 = (1-\alpha)^2 \rho_u^2\, V(e_t) \quad \square$$
 
-**Simulation parameters.** $\alpha = 0.92$, $\rho(A) = 0.75$: convergence rate $(1{-}\alpha)\rho_u \leq 0.08 \times 0.75 = 0.06$. The simulation confirms $V \to 0$ within 2 steps after disturbance ends, consistent with this fast rate (the plant's own stability also contributes).
+**Simulation parameters.** $\alpha = 0.92$, $\rho(A) = 0.75$: $\|e\|$ convergence rate $\rho = (1{-}\alpha)\rho_u \leq 0.08 \times 0.75 = 0.06$ (so $V$'s own rate is $\rho^2 \leq 0.0036$, even faster). The simulation confirms $V \to 0$ within 2 steps after disturbance ends, consistent with this fast rate (the plant's own stability also contributes).
 
 **Remark on the commutativity assumption.** For general $A$ (which does not commute with $\Pi$), the safe component $s_t = (I-\Pi)x_t$ contributes to $e_{t+1}$ via $\Pi\, A\, (I-\Pi)\, s_t$. This safe-to-unsafe coupling means Theorem 2 is not tight for arbitrary $A$. The simulation uses a generic random $A$ and still exhibits exponential convergence, suggesting ISS holds in practice. A rigorous treatment for general $A$ requires an LMI-based certificate; this is left as an open problem.
 
@@ -145,13 +145,13 @@ A more precise name for the controller is: **Proportional CLF State Feedback on 
 
 ## 6. What Transfers to Real LLMs
 
-The **mechanism** transfers: encode → zero unsafe features → decode can be applied as a transformer hook at any layer. The real SAE integration (`src/real_sae.py`) demonstrates this on GPT-2 layer 8.
+The **mechanism** transfers: encode → zero unsafe features → decode can be applied as a transformer hook at any layer. The real SAE integration (`src/real_sae.py`) is designed to demonstrate this on GPT-2 layer 8 — implemented, but not yet run end-to-end (see the status note in README.md's Usage section); the claim here is that the mechanism is technically wireable, not that it has been observed working on a real model.
 
 The **certificate** (Theorems 1–2, Proposition 1) does **not** directly transfer, because:
 
 1. The transformer forward pass is not a linear dynamical system — it is a composition of attention, MLP, and layer norm operations that do not admit a simple $x_{t+1} = A\, x_t$ form.
 2. The commutativity assumption $A\Pi = \Pi A$ is not justified for real transformer weight matrices.
-3. The Lyapunov boundary $c$ is calibrated for the mock simulation (STATE_DIM=8) and must be re-calibrated empirically for $d_{\mathrm{model}} = 768$.
+3. The Lyapunov boundary $c$ is manually set for the mock simulation (STATE_DIM=8), justified by (not derived from) the measured benign-trajectory floor — see `measure_benign_lyapunov_floor` in `main.py` — and must be re-set the same way, empirically, for $d_{\mathrm{model}} = 768$.
 
 The value of the mock simulation is to make the mathematical framework **executable and falsifiable** under controlled conditions where all assumptions hold exactly.
 
@@ -173,6 +173,6 @@ The value of the mock simulation is to make the mathematical framework **executa
 
 2. **Transformer plant identification.** Approximating the transformer forward pass as a discrete-time dynamical system in residual-stream coordinates — identifying an effective $A$, $W$, noise covariance — is an open system identification problem.
 
-3. **Online feature identification.** `identify_unsafe_features` uses offline activation difference. An online adaptive version that updates $\mathcal{I}$ during generation would strengthen the real-model claim.
+3. **Online feature identification.** `identify_unsafe_features` uses offline activation difference. An online adaptive version that updates $\mathcal{I}$ during generation would strengthen the real-model claim. A prerequisite open question sits upstream of "online vs. offline": the current offline selection ranks features on 4 harmful vs. 4 benign prompts, which is little signal for separating harm-selective features from merely topical ones (e.g. features that fire on "people/relationships" vocabulary generally, not on harm specifically). This has not been validated end-to-end (see README.md's status note on `main_real.py`); `identify_unsafe_features` now logs raw diff values and `describe_unsafe_features`'s max-activating contexts serve as the intended acceptance test — if a first run shows selected features are topical rather than harm-related, that is itself a documented finding about the fragility of small-sample offline selection, not just an implementation bug to silently patch.
 
 4. **Gain design.** $\alpha = 0.92$ is chosen heuristically. H∞-optimal or LQR-optimal gain synthesis on the unsafe subspace (given an identified plant model) would replace the heuristic.

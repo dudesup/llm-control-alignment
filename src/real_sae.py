@@ -26,7 +26,10 @@ from sae_lens import SAE
 LAYER             = 8      # GPT-2 small layer to hook (0-indexed, 12 total)
 TOP_K_UNSAFE      = 8      # number of features to classify as unsafe
 SUPPRESSION_GAIN  = 0.92   # same α as mock simulation
-LYAPUNOV_BOUNDARY = 0.4    # c — runtime halt threshold (invariant boundary when d_t = 0); needs empirical recalibration for d_model=768 (mock is calibrated for d=8)
+LYAPUNOV_BOUNDARY = 0.4    # c — runtime halt threshold; needs empirical recalibration for
+                           # d_model=768 (mock is calibrated for d=8). Thm 2's invariance proof
+                           # requires a linear plant — GPT-2 is not one, so this is an empirical
+                           # threshold only, not a proven invariant, even at d_t=0
 
 HOOK_POINT  = f"blocks.{LAYER}.hook_resid_post"
 SAE_RELEASE = "gpt2-small-res-jb"
@@ -79,18 +82,42 @@ def _mean_feature_activations(
     return total / len(prompts)
 
 
-def identify_unsafe_features(model: HookedTransformer, sae: SAE) -> list[int]:
+def identify_unsafe_features(model: HookedTransformer, sae: SAE, verbose: bool = True) -> list[int]:
     """
     Return TOP_K_UNSAFE feature indices with the highest differential activation
     on harmful versus benign prompts.
 
     Activation difference is a standard probe for concept-selective features in
     sparse autoencoders (Bricken et al. 2023, Cunningham et al. 2023).
+
+    This is the most fragile link in the real-model pipeline: 4 harmful vs. 4 benign
+    prompts is a thin sample, and there is no guarantee the top-differential features
+    are harm-selective rather than merely topical (e.g. "people/relationships" words
+    happen to co-occur with the harmful prompts here). verbose=True (default) prints
+    the raw diff values, not just the resulting indices, so this can be sanity-checked
+    on first run instead of trusted blind — cross-reference with describe_unsafe_features()
+    and treat its max-activating contexts as an acceptance test before reporting any
+    figure built on these indices.
     """
     harmful_mean = _mean_feature_activations(model, sae, HARMFUL_PROMPTS)
     benign_mean  = _mean_feature_activations(model, sae, BENIGN_PROMPTS)
     diff    = harmful_mean - benign_mean
     indices = np.argsort(diff)[-TOP_K_UNSAFE:][::-1]
+
+    if verbose:
+        print(f"  [identify_unsafe_features] diff stats over all {len(diff)} features: "
+              f"mean={diff.mean():.4f}  std={diff.std():.4f}  max={diff.max():.4f}  min={diff.min():.4f}")
+        print(f"  [identify_unsafe_features] top-{TOP_K_UNSAFE} raw diff values "
+              f"(harmful_mean - benign_mean), before any thresholding:")
+        for rank, idx in enumerate(indices):
+            print(f"    #{rank + 1:2d}  feature {int(idx):5d}  diff={diff[idx]:+.4f}  "
+                  f"(harmful={harmful_mean[idx]:.4f}, benign={benign_mean[idx]:.4f})")
+        print("  [identify_unsafe_features] CAUTION: this ranks features by activation "
+              "difference on 4 vs. 4 prompts, not by validated concept identity. If the "
+              "top diff values are only marginally above the mean/std of the full "
+              "distribution above, or describe_unsafe_features()'s max-activating contexts "
+              "don't look harm-related, the selection needs more/better-contrasted prompts — "
+              "not just a higher TOP_K_UNSAFE.")
 
     if diff[indices[0]] <= 0:
         raise ValueError(
@@ -236,7 +263,9 @@ def run_comparison(
         breach_count        : number of steps where V >= LYAPUNOV_BOUNDARY
         I_unsafe            : list of feature indices used
         uncontrolled_energy : np.ndarray of ‖f[I_unsafe]‖² per token (no clamping)
-        controlled_energy   : np.ndarray of ‖f[I_unsafe]‖² per token (post-clamping, analytic)
+        controlled_energy   : np.ndarray of ‖f[I_unsafe]‖² per token (post-clamping, measured
+                               by re-encoding the corrected state — not an analytic shortcut,
+                               see clamp_hook for why that shortcut would be wrong here)
     """
     W_dec_unsafe = ctrl._W_dec_unsafe  # (k, d_model) — captured in closure
 
@@ -282,14 +311,24 @@ def run_comparison(
                 ctrl.breach_log.append({"t": t, "V": v})
             ctrl._step += 1
 
-            # Post-clamp energy: (1-α)² · ‖f[I_unsafe]‖² (analytic)
-            pre_energy = float(np.sum(f_t[ctrl.I_unsafe] ** 2))
-            controlled_energy.append((1.0 - SUPPRESSION_GAIN) ** 2 * pre_energy)
-
             # Clamp unsafe feature activations and reconstruct
             f_tensor = torch.from_numpy(f_t).unsqueeze(0)     # (1, d_sae)
             f_tensor[0, ctrl.I_unsafe] *= (1.0 - SUPPRESSION_GAIN)
-            value[0, -1, :] = sae.decode(f_tensor)[0]         # (d_model,)
+            corrected = sae.decode(f_tensor)[0]               # (d_model,)
+            value[0, -1, :] = corrected
+
+            # Post-clamp energy: measured by re-encoding the corrected state, NOT
+            # assumed analytically as (1-α)²·pre_energy. That shortcut is only exact
+            # if encode(decode(f)) == f, which requires W_enc·W_dec == I — false for
+            # an overcomplete SAE (d_sae > d_model here, same as the mock's m=16>d=8).
+            # This is the identical mechanism behind the mock's 70.6% (SAE-grounded,
+            # measured) vs ~99.4% (naive analytic) suppression gap — see README
+            # §Results and RESEARCH_NOTE.md §4 Theorem 1 Remark. Using the analytic
+            # shortcut here would silently overstate suppression on the real model,
+            # for a likely much larger d_sae/d_model overcompleteness ratio than the
+            # mock's.
+            f_post = sae.encode(corrected.unsqueeze(0))[0].cpu().numpy()
+            controlled_energy.append(float(np.sum(f_post[ctrl.I_unsafe] ** 2)))
         return value
 
     for _ in range(n_tokens):
