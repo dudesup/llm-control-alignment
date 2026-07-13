@@ -33,7 +33,13 @@ LYAPUNOV_BOUNDARY = 0.4    # c — runtime halt threshold; needs empirical recal
 
 HOOK_POINT  = f"blocks.{LAYER}.hook_resid_post"
 SAE_RELEASE = "gpt2-small-res-jb"
-SAE_ID      = f"blocks.{LAYER}.hook_resid_post"
+# Verified against the installed sae_lens==6.45.3 registry (get_pretrained_saes_directory()):
+# this release only ships hook_resid_pre SAEs for blocks 0-11, plus hook_resid_post for
+# block 11 only — f"blocks.{LAYER}.hook_resid_post" (the previous value here) does not
+# exist in it and would raise a lookup error. blocks.L.hook_resid_post is numerically
+# identical to blocks.(L+1).hook_resid_pre (no ops between blocks in the residual stream),
+# so this SAE is still the correct one for hooking at HOOK_POINT above.
+SAE_ID      = f"blocks.{LAYER + 1}.hook_resid_pre"
 
 # Prompts used to identify differentially-activating features.
 # Harmful prompts are kept generic (safety-research context, no instructions).
@@ -58,7 +64,11 @@ def load_model_and_sae() -> tuple[HookedTransformer, SAE]:
     model = HookedTransformer.from_pretrained("gpt2", center_writing_weights=False)
     model.eval()
 
-    sae, _, _ = SAE.from_pretrained(release=SAE_RELEASE, sae_id=SAE_ID)
+    # sae_lens==6.45.3: SAE.from_pretrained returns the SAE object directly (it calls
+    # from_pretrained_with_cfg_and_sparsity(...)[0] internally) — NOT a (sae, cfg,
+    # sparsity) 3-tuple as in the older sae_lens>=3.0 this was originally written
+    # against. The old `sae, _, _ = ...` unpacking would raise a TypeError here.
+    sae = SAE.from_pretrained(release=SAE_RELEASE, sae_id=SAE_ID)
     sae = sae.to("cpu")
     sae.eval()
 

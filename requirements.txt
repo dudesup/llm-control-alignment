@@ -5,6 +5,10 @@ matplotlib>=3.8
 
 # Real-model validation — required for main_real.py only
 # First run downloads GPT-2 weights (~500 MB) and SAE checkpoint (~100 MB)
+# sae_lens>=3.0 was too permissive: SAE.from_pretrained's return signature and the
+# gpt2-small-res-jb sae_id naming both changed between 3.x and 6.x (src/real_sae.py
+# is written against and verified working with 6.45.3, installed and checked directly
+# against its API/registry). Pinning the floor to what's actually been checked.
 torch>=2.0
 transformer_lens>=1.14
-sae_lens>=3.0
+sae_lens>=6.0
