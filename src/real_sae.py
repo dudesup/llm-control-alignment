@@ -294,7 +294,7 @@ def run_comparison(
     controlled_energy: list[float] = []
 
     def clamp_hook(value: torch.Tensor, hook) -> torch.Tensor:
-        """Hook: log V(e_t) and breach, then clamp unsafe features."""
+        """Hook: log V(e_t) and breach, then apply the additive correction w_t=-alpha*e_t."""
         with torch.no_grad():
             last = value[0, -1, :].cpu().numpy()              # (d_model,)
             f_t  = sae.encode(
@@ -311,10 +311,17 @@ def run_comparison(
                 ctrl.breach_log.append({"t": t, "V": v})
             ctrl._step += 1
 
-            # Clamp unsafe feature activations and reconstruct
-            f_tensor = torch.from_numpy(f_t).unsqueeze(0)     # (1, d_sae)
-            f_tensor[0, ctrl.I_unsafe] *= (1.0 - SUPPRESSION_GAIN)
-            corrected = sae.decode(f_tensor)[0]               # (d_model,)
+            # Additive correction w_t = -alpha*e_t (RESEARCH_NOTE.md §3 control law) —
+            # NOT a full decode(clamped f) reconstruction. The previous version replaced
+            # the whole residual with sae.decode(f_tensor), which injects
+            # decode(encode(x)) - x (the SAE's reconstruction residual, mostly outside
+            # range(Pi)) into the safe directions too — breaking Theorem 1's zero-
+            # alignment-tax guarantee, the one property this design claims to hold
+            # "exactly, no approximation" (§4). Additive correction on the directly-
+            # computed e_t (already available above, for the Lyapunov value) is the
+            # controller Theorem 1 actually proves the property for.
+            e_t_tensor = torch.from_numpy(e_t.astype(np.float32))
+            corrected  = value[0, -1, :] - SUPPRESSION_GAIN * e_t_tensor
             value[0, -1, :] = corrected
 
             # Post-clamp energy: measured by re-encoding the corrected state, NOT
